@@ -2,10 +2,12 @@ import { useSyncExternalStore } from 'react';
 import {
   applyOp,
   deserializeDoc,
+  toRegion,
   type Bounds,
   type ClientKind,
   type ClientMessage,
   type Doc,
+  type MaskRegion,
   type Mirror,
   type Op,
   type PresenceClient,
@@ -14,9 +16,12 @@ import {
 
 export type ToolId =
   | 'pencil' | 'eraser' | 'bucket' | 'picker' | 'line' | 'rect' | 'ellipse'
-  | 'select' | 'move' | 'dither' | 'shade' | 'pan';
+  | 'select' | 'lasso' | 'wand' | 'text' | 'move' | 'dither' | 'shade' | 'pan';
 
-export interface Selection { x: number; y: number; w: number; h: number }
+/** Bounding box + optional per-pixel mask (lasso / magic wand). */
+export type Selection = MaskRegion;
+
+export interface TextDraft { x: number; y: number; text: string }
 
 export interface Toast { id: number; text: string; kind: 'info' | 'error' }
 
@@ -39,6 +44,12 @@ export interface State {
   shapeFilled: boolean;
   fillContiguous: boolean;
   shadeAmount: number;
+  wandContiguous: boolean;
+  textDraft: TextDraft | null;
+  textFont: string;
+  textScale: number;
+  textOutline: boolean;
+  textShadow: boolean;
 
   zoom: number;
   showGrid: boolean;
@@ -69,6 +80,12 @@ const initial: State = {
   shapeFilled: false,
   fillContiguous: true,
   shadeAmount: 0.08,
+  wandContiguous: true,
+  textDraft: null,
+  textFont: 'normal',
+  textScale: 1,
+  textOutline: false,
+  textShadow: false,
   zoom: 16,
   showGrid: true,
   onionSkin: false,
@@ -81,7 +98,10 @@ const initial: State = {
 };
 
 const PREFS_KEY = 'openpixel.prefs';
-const PERSISTED: (keyof State)[] = ['tool', 'primary', 'secondary', 'brushSize', 'brushShape', 'mirror', 'shapeFilled', 'fillContiguous', 'showGrid', 'onionSkin'];
+const PERSISTED: (keyof State)[] = [
+  'tool', 'primary', 'secondary', 'brushSize', 'brushShape', 'mirror', 'shapeFilled', 'fillContiguous', 'showGrid', 'onionSkin',
+  'wandContiguous', 'textFont', 'textScale', 'textOutline', 'textShadow',
+];
 
 function loadPrefs(): Partial<State> {
   try {
@@ -218,6 +238,19 @@ function handle(msg: ServerMessage) {
 
 export function newGroup() {
   return `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** The current selection as an op `clip` (cached per selection object). */
+const clipCache = new WeakMap<Selection, ReturnType<typeof toRegion>>();
+export function selectionClip() {
+  const sel = state.selection;
+  if (!sel) return undefined;
+  let r = clipCache.get(sel);
+  if (!r) {
+    r = toRegion(sel);
+    clipCache.set(sel, r);
+  }
+  return r;
 }
 
 export function swapColors() {

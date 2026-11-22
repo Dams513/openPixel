@@ -1,9 +1,10 @@
-import type { ComponentType } from 'react';
+import { useEffect, useRef, type ComponentType } from 'react';
 import {
-  Circle, Eraser, FlipHorizontal2, Grid2x2, Hand, Move, PaintBucket, Pencil, Pipette, Slash, Square, SquareDashed, SunMedium,
+  Check, Circle, Eraser, FlipHorizontal2, Grid2x2, Hand, Lasso, Move, PaintBucket, Pencil, Pipette, Slash, Square, SquareDashed, SunMedium, Type, WandSparkles,
 } from 'lucide-react';
+import { FONTS, type Mirror } from '@openpixel/core';
 import { setState, useStore, type ToolId } from '../store';
-import type { Mirror } from '@openpixel/core';
+import { commitText } from '../actions';
 
 const TOOLS: { id: ToolId; label: string; key: string; Icon: ComponentType<{ size?: number }> }[] = [
   { id: 'pencil', label: 'Lápiz', key: 'B', Icon: Pencil },
@@ -15,7 +16,10 @@ const TOOLS: { id: ToolId; label: string; key: string; Icon: ComponentType<{ siz
   { id: 'ellipse', label: 'Elipse', key: 'O', Icon: Circle },
   { id: 'dither', label: 'Tramado (dither)', key: 'D', Icon: Grid2x2 },
   { id: 'shade', label: 'Sombreado: izq. aclara, der. oscurece', key: 'S', Icon: SunMedium },
-  { id: 'select', label: 'Selección (arrastra dentro para mover, Alt para copiar)', key: 'M', Icon: SquareDashed },
+  { id: 'select', label: 'Selección rectangular', key: 'M', Icon: SquareDashed },
+  { id: 'lasso', label: 'Lazo (selección libre)', key: 'Q', Icon: Lasso },
+  { id: 'wand', label: 'Varita mágica (selecciona por color)', key: 'W', Icon: WandSparkles },
+  { id: 'text', label: 'Texto', key: 'T', Icon: Type },
   { id: 'move', label: 'Mover capa', key: 'V', Icon: Move },
   { id: 'pan', label: 'Mano (o mantén Espacio)', key: 'H', Icon: Hand },
 ];
@@ -56,6 +60,7 @@ export function ToolOptions() {
   const filled = useStore((s) => s.shapeFilled);
   const contiguous = useStore((s) => s.fillContiguous);
   const shadeAmount = useStore((s) => s.shadeAmount);
+  const wandContiguous = useStore((s) => s.wandContiguous);
 
   const usesSize = ['pencil', 'eraser', 'dither', 'shade', 'line', 'rect'].includes(tool);
   const usesShape = ['pencil', 'eraser', 'dither', 'shade'].includes(tool);
@@ -104,9 +109,59 @@ export function ToolOptions() {
         </div>
       )}
       {(tool === 'line' || tool === 'rect' || tool === 'ellipse') && <span className="hint">Mayús: proporciones perfectas</span>}
-      {tool === 'select' && <span className="hint">Arrastra dentro para mover · Alt copia · Supr borra · Ctrl+C/X/V</span>}
+      {tool === 'wand' && (
+        <label className="opt check">
+          <input type="checkbox" checked={!wandContiguous} onChange={(e) => setState({ wandContiguous: !e.target.checked })} /> Todo el color (no contiguo)
+        </label>
+      )}
+      {tool === 'text' && <TextOptions />}
+      {(tool === 'select' || tool === 'lasso' || tool === 'wand') && (
+        <span className="hint">Mayús: añadir · Ctrl: quitar · arrastra dentro para mover (Alt copia) · Supr borra · Ctrl+C/X/V · Esc deselecciona</span>
+      )}
       {tool === 'picker' && <span className="hint">Clic izq. → color principal · clic der. → secundario</span>}
       {['pencil', 'bucket', 'line', 'rect', 'ellipse', 'dither'].includes(tool) && <span className="hint">Clic der. usa el color secundario · Alt+clic toma color</span>}
     </div>
+  );
+}
+
+function TextOptions() {
+  const draft = useStore((s) => s.textDraft);
+  const font = useStore((s) => s.textFont);
+  const scale = useStore((s) => s.textScale);
+  const outline = useStore((s) => s.textOutline);
+  const shadow = useStore((s) => s.textShadow);
+  const ref = useRef<HTMLInputElement>(null);
+  const pos = draft ? `${draft.x},${draft.y}` : '';
+  useEffect(() => {
+    if (pos) ref.current?.focus();
+  }, [pos]);
+  return (
+    <>
+      <input
+        ref={ref}
+        id="text-tool-input"
+        className="text-input"
+        placeholder={draft ? 'Escribe… (Enter aplica)' : 'Haz clic en el lienzo'}
+        readOnly={!draft}
+        value={draft?.text ?? ''}
+        onChange={(e) => draft && setState({ textDraft: { ...draft, text: e.target.value } })}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); commitText(); }
+          if (e.key === 'Escape') { setState({ textDraft: null }); (e.target as HTMLInputElement).blur(); }
+        }}
+        aria-label="Texto"
+      />
+      <button className="icon-btn" title="Aplicar texto (Enter)" aria-label="Aplicar texto" disabled={!draft?.text} onClick={commitText}><Check size={16} /></button>
+      <select value={font} onChange={(e) => setState({ textFont: e.target.value })} aria-label="Fuente" className="mini-select">
+        {Object.values(FONTS).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+      </select>
+      <label className="opt">
+        Escala
+        <input type="number" className="mini-num" min={1} max={16} value={scale} onChange={(e) => setState({ textScale: Math.max(1, Math.min(16, Number(e.target.value) || 1)) })} />
+      </label>
+      <label className="opt check"><input type="checkbox" checked={outline} onChange={(e) => setState({ textOutline: e.target.checked })} /> Contorno</label>
+      <label className="opt check"><input type="checkbox" checked={shadow} onChange={(e) => setState({ textShadow: e.target.checked })} /> Sombra</label>
+      <span className="hint">Contorno y sombra usan el color secundario</span>
+    </>
   );
 }

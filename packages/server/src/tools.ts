@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { Op } from '@openpixel/core';
+import { ANIM_INFO, ANIM_PRESETS, FONTS, measureText, type Op } from '@openpixel/core';
 import { call, ensureEditorOpen, openBrowser } from './backend';
 import { editorUrl } from './http';
 
@@ -46,13 +46,23 @@ async function draw(ops: Op[], label: string, wantPreview?: boolean): Promise<Re
       { ops, label },
     );
     const b = r.bounds;
-    const text = r.changed
-      ? `OK (${label}): ${r.pixelsChanged} píxeles cambiados${b ? ` en x=${b.x}..${b.x + b.w - 1}, y=${b.y}..${b.y + b.h - 1}` : ''}.`
-      : `OK (${label}): sin cambios en los píxeles.`;
+    const text = !r.changed
+      ? `OK (${label}): sin cambios.`
+      : r.pixelsChanged === 0
+        ? `OK (${label}).`
+        : `OK (${label}): ${r.pixelsChanged} píxeles cambiados${b ? ` en x=${b.x}..${b.x + b.w - 1}, y=${b.y}..${b.y + b.h - 1}` : ''}.`;
     const content: Content[] = [{ type: 'text', text }];
     if (wantPreview) content.push(...(await viewContent()));
     return { content };
   });
+}
+
+async function sheetContent(opts: Record<string, unknown> = {}): Promise<Content[]> {
+  const r = await call<{ base64: string; scale: number; columns: number; frames: { index: number; duration: number }[] }>('sheet', opts);
+  return [
+    { type: 'image', data: r.base64, mimeType: 'image/png' },
+    { type: 'text', text: `${r.frames.length} frames (escala ${r.scale}x, ${r.columns} por fila). Duraciones ms: ${r.frames.map((f) => f.duration).join(', ')}` },
+  ];
 }
 
 const text = (t: unknown): Result => ({ content: [{ type: 'text', text: typeof t === 'string' ? t : JSON.stringify(t, null, 2) }] });
@@ -66,6 +76,8 @@ Flujo recomendado:
 4. Organiza en capas (layer action=add) — p.ej. fondo, contorno, color, sombras — para poder corregir sin destruir.
 5. Revisa tu trabajo con view_canvas (devuelve una imagen) y corrige. read_pixels devuelve el área como texto en el mismo formato que draw_grid.
 6. batch permite enviar muchas operaciones en una sola llamada (y un solo paso de deshacer).
+7. Texto: draw_text con fuentes pixel (acentos y ñ incluidos), contorno y sombra.
+8. Animación: animate_sprite genera en un paso caminar, correr, saltar, flotar, etc. a partir del sprite de una capa; create_animation te deja dibujar cada pose. Revisa con view_animation.
 Coordenadas: (0,0) es la esquina superior izquierda; x crece a la derecha, y hacia abajo. Consejos de pixel art: contornos de 1px, paleta limitada, sombras con tonos más oscuros y fríos, luces más claras y cálidas, evita líneas "dentadas" irregulares.`;
 
 export function registerTools(server: McpServer) {
@@ -333,6 +345,8 @@ Cada op es un objeto con "type" y sus campos (layer/frame opcionales en todas la
 - {type:"flip", axis:"h"|"v"} · {type:"rotate", dir:"cw"|"ccw"|"180"} · {type:"shift", dx, dy, wrap?}
 - {type:"moveRegion", x,y,w,h, dx,dy, copy?}
 - {type:"addLayer", name?, index?} · {type:"updateLayer", layer, name?, visible?, opacity?, locked?} · {type:"deleteLayer", layer} · {type:"select", layer?, frame?}
+- {type:"text", x, y, text, color, font?, scale?, align?, outline?, shadow?}
+- {type:"animate", preset, layer?, mode?, duration?, intensity?, facing?}
 - {type:"addFrame", duplicate?, index?} · {type:"updateFrame", frame, duration}`,
     inputSchema: {
       ops: z.array(z.looseObject({ type: z.string() })).min(1),
@@ -340,6 +354,107 @@ Cada op es un objeto con "type" y sus campos (layer/frame opcionales en todas la
       preview,
     },
   }, async (a) => draw(a.ops as unknown as Op[], a.label ?? 'batch', a.preview));
+
+  server.registerTool('draw_text', {
+    description: `Escribe texto con una fuente pixel art. Fuentes: ${Object.values(FONTS).map((f) => `"${f.id}" (${f.name}, mayúsculas de ${f.capHeight}px de alto)`).join(', ')}. La fuente normal tiene minúsculas, acentos, ñ, ¿ ¡ y símbolos (♥ ★ °); "tiny" solo mayúsculas.
+(x,y) es la esquina superior izquierda de las mayúsculas (con align=center, x es el centro; con right, el borde derecho). Las tildes de las mayúsculas sobresalen 2px por arriba y las letras con cola (g, p, y) bajan 2px. "\n" hace salto de línea. Usa measure=true para conocer el tamaño sin dibujar.`,
+    inputSchema: {
+      text: z.string().min(1).max(500),
+      x: z.number().int(), y: z.number().int(),
+      color,
+      font: z.enum(Object.keys(FONTS) as [string, ...string[]]).optional(),
+      scale: z.number().int().min(1).max(16).optional().describe('Ampliación entera de la fuente (2 = letras el doble de grandes).'),
+      align: z.enum(['left', 'center', 'right']).optional(),
+      outline: z.string().optional().describe('Color de contorno alrededor de las letras.'),
+      shadow: z.string().optional().describe('Color de sombra desplazada abajo-derecha.'),
+      spacing: z.number().int().min(0).max(8).optional().describe('Píxeles entre letras (por defecto 1).'),
+      measure: z.boolean().optional().describe('Solo medir: devuelve ancho y alto sin dibujar.'),
+      ...target,
+      preview,
+    },
+  }, async (a) => {
+    if (a.measure) {
+      const m = measureText(a.text, { font: a.font, scale: a.scale, spacing: a.spacing, align: a.align });
+      return text({ width: m.width, height: m.height });
+    }
+    return draw([{ type: 'text', text: a.text, x: a.x, y: a.y, color: a.color, font: a.font, scale: a.scale, align: a.align, outline: a.outline, shadow: a.shadow, spacing: a.spacing, layer: a.layer, frame: a.frame }], 'draw_text', a.preview);
+  });
+
+  server.registerTool('animate_sprite', {
+    description: `Genera una animación completa en un solo paso a partir del sprite dibujado en una capa (frame actual), aplicando movimiento procedural. Las demás capas (fondo, etc.) se copian a cada frame.
+Presets:
+${ANIM_PRESETS.map((p) => `- ${p} (${ANIM_INFO[p].frames} frames): ${ANIM_INFO[p].description}`).join('\n')}
+Funciona mejor con el personaje solo en su capa, centrado y con espacio libre alrededor (el salto necesita espacio arriba). Para caminar/correr, las piernas deben estar en la parte de abajo del sprite (ajusta leg_split). Para animaciones con poses dibujadas a mano usa create_animation. Revisa el resultado con view_animation.`,
+    inputSchema: {
+      preset: z.enum(ANIM_PRESETS),
+      layer: z.union([z.string(), z.number().int()]).optional().describe('Capa con el sprite. Por defecto la activa.'),
+      frame: frameRef.describe('Frame de origen. Por defecto el activo.'),
+      mode: z.enum(['replace', 'append']).optional().describe('replace (defecto): la animación sustituye los frames; append: se añade al final.'),
+      duration: z.number().int().min(10).max(5000).optional().describe('ms por frame (cada preset tiene un valor por defecto).'),
+      intensity: z.number().int().min(1).max(256).optional().describe('Amplitud en píxeles: altura del salto, zancada, vibración…'),
+      facing: z.enum(['right', 'left']).optional().describe('Hacia dónde mira el sprite (afecta correr y atacar).'),
+      leg_split: z.number().min(0.2).max(0.95).optional().describe('Dónde empiezan las piernas, como fracción de la altura del sprite desde arriba (defecto 0.65).'),
+      preview: z.boolean().optional().describe('Devuelve la tira de frames generada (por defecto true).'),
+    },
+  }, async (a) => {
+    const r = await draw([{ type: 'animate', preset: a.preset, layer: a.layer, frame: a.frame, mode: a.mode, duration: a.duration, intensity: a.intensity, facing: a.facing, legSplit: a.leg_split }], `animar: ${a.preset}`);
+    if (r.isError || a.preview === false) return r;
+    return guard(async () => ({ content: [...r.content, ...(await sheetContent())] }));
+  });
+
+  server.registerTool('create_animation', {
+    description: `Crea una animación dibujando tú cada frame en una sola llamada (ideal para ciclos de caminar con poses de piernas reales, ataques, efectos). Cada frame es un bloque draw_grid (filas + legend compartido).
+Ejemplo de ciclo de 4 frames: frames: [{rows:[...]},{rows:[...]},{rows:[...]},{rows:[...]}], legend: {"o":"#222034","s":"#f2c49b"}, x: 8, y: 4.
+Por defecto (mode=replace) la animación reemplaza los frames del documento; con append se añade al final. La capa destino se limpia en cada frame (clear=false para dibujar encima del contenido copiado del frame anterior). Las demás capas se copian a cada frame.`,
+    inputSchema: {
+      frames: z.array(z.object({
+        rows: z.array(z.string()).min(1),
+        duration: z.number().int().min(10).max(5000).optional(),
+        x: z.number().int().optional().describe('Posición propia de este frame (si no, usa la general).'),
+        y: z.number().int().optional(),
+        legend: z.record(z.string(), z.string().nullable()).optional().describe('Colores extra solo para este frame.'),
+      })).min(1).max(64),
+      legend: z.record(z.string(), z.string().nullable()),
+      x: z.number().int(),
+      y: z.number().int(),
+      duration: z.number().int().min(10).max(5000).optional().describe('ms por frame por defecto (100).'),
+      layer: z.union([z.string(), z.number().int()]).optional(),
+      mode: z.enum(['replace', 'append']).optional(),
+      clear: z.boolean().optional(),
+      skip: z.string().optional(),
+      preview: z.boolean().optional().describe('Devuelve la tira de frames (por defecto true).'),
+    },
+  }, async (a) => guard(async () => {
+    const info = await call<{ frames: unknown[]; activeFrame: number; layers: { id: string; name: string; active: boolean }[] }>('info');
+    const ops: Op[] = [];
+    const layer = a.layer;
+    const n = info.frames.length;
+    if ((a.mode ?? 'replace') === 'replace') {
+      ops.push({ type: 'select', frame: info.activeFrame });
+      for (let i = n - 1; i >= 0; i--) if (i !== info.activeFrame) ops.push({ type: 'deleteFrame', frame: i });
+    } else {
+      ops.push({ type: 'select', frame: n - 1 }, { type: 'addFrame', duplicate: true });
+    }
+    if (layer !== undefined) ops.push({ type: 'select', layer });
+    a.frames.forEach((f, i) => {
+      if (i > 0) ops.push({ type: 'addFrame', duplicate: true });
+      if (a.clear !== false) ops.push({ type: 'clear', layer });
+      ops.push({ type: 'grid', x: f.x ?? a.x, y: f.y ?? a.y, rows: f.rows, legend: { ...a.legend, ...(f.legend ?? {}) }, skip: a.skip, layer });
+      ops.push({ type: 'updateFrame', duration: f.duration ?? a.duration ?? 100 });
+    });
+    const r = await draw(ops, `animación (${a.frames.length} frames)`);
+    if (r.isError || a.preview === false) return r;
+    return { content: [...r.content, ...(await sheetContent())] };
+  }));
+
+  server.registerTool('view_animation', {
+    description: 'Devuelve una imagen con todos los frames de la animación uno al lado del otro (en orden, de izquierda a derecha y de arriba abajo), con sus duraciones. Úsala para revisar animaciones.',
+    inputSchema: {
+      scale: z.number().int().min(1).max(32).optional(),
+      columns: z.number().int().min(1).max(64).optional(),
+    },
+    annotations: { readOnlyHint: true },
+  }, async (a) => guard(async () => ({ content: await sheetContent(a) })));
 
   server.registerTool('undo', {
     description: 'Deshace el último cambio (de cualquiera: el usuario o tú).',

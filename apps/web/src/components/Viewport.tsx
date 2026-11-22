@@ -2,9 +2,16 @@ import { useEffect, useRef } from 'react';
 import {
   activeLayer,
   brush,
+  combineRegions,
   compositePacked,
   ellipse,
+  floodIndices,
+  layoutText,
   line,
+  polygonRegion,
+  regionFromIndices,
+  regionOutline,
+  regionTester,
   packedToBytes,
   parseColor,
   rect,
@@ -14,18 +21,33 @@ import {
   type Doc,
   type Op,
 } from '@openpixel/core';
-import { getState, newGroup, sendOps, setState, subscribe, toast, useStore, type Selection } from '../store';
+import { getState, newGroup, selectionClip, sendOps, setState, subscribe, toast, useStore, type Selection } from '../store';
 
 export const ZOOMS = [0.25, 0.5, 1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96, 128];
 
 type Pt = { x: number; y: number };
+type SelMode = 'replace' | 'add' | 'subtract';
+
+const outlineCache = new WeakMap<Selection, [number, number, number, number][]>();
+function outlineOf(sel: Selection) {
+  let o = outlineCache.get(sel);
+  if (!o) { o = regionOutline(sel); outlineCache.set(sel, o); }
+  return o;
+}
+
+function applySel(mode: SelMode, region: Selection | null) {
+  const cur = getState().selection;
+  const next = mode === 'replace' ? region : combineRegions(cur, region, mode);
+  setState({ selection: next });
+}
 
 type Interaction =
   | { kind: 'pan'; sx: number; sy: number; px: number; py: number }
   | { kind: 'stroke'; group: string; color: string | null; last: Pt; queue: number[]; dither: boolean }
   | { kind: 'shade'; points: number[]; last: Pt; amount: number }
   | { kind: 'shape'; tool: 'line' | 'rect' | 'ellipse'; start: Pt; end: Pt; color: string | null }
-  | { kind: 'select'; start: Pt; end: Pt }
+  | { kind: 'select'; start: Pt; end: Pt; mode: SelMode }
+  | { kind: 'lasso'; points: Pt[]; mode: SelMode }
   | { kind: 'moveSel'; start: Pt; end: Pt; sel: Selection; copy: boolean }
   | { kind: 'moveLayer'; start: Pt; end: Pt };
 
@@ -59,10 +81,14 @@ export function Viewport() {
       if (!raf) raf = requestAnimationFrame(frame);
     };
 
-    const toDoc = (cx: number, cy: number): Pt => {
+    const toDocF = (cx: number, cy: number): Pt => {
       const r = canvas.getBoundingClientRect();
       const v = view.current;
-      return { x: Math.floor((cx - r.left - v.panX) / v.zoom), y: Math.floor((cy - r.top - v.panY) / v.zoom) };
+      return { x: (cx - r.left - v.panX) / v.zoom, y: (cy - r.top - v.panY) / v.zoom };
+    };
+    const toDoc = (cx: number, cy: number): Pt => {
+      const p = toDocF(cx, cy);
+      return { x: Math.floor(p.x), y: Math.floor(p.y) };
     };
 
     const setZoom = (z: number, cx?: number, cy?: number) => {
@@ -212,15 +238,33 @@ export function Viewport() {
         const cel = layer.cels[doc.activeFrame];
         const dx = it.end.x - it.start.x, dy = it.end.y - it.start.y;
         const area = it.kind === 'moveSel' ? it.sel : { x: 0, y: 0, w: doc.width, h: doc.height };
+        const inArea = regionTester(area);
         ctx.globalAlpha = 0.85;
         for (let y = area.y; y < area.y + area.h; y++) for (let x = area.x; x < area.x + area.w; x++) {
-          if (x < 0 || y < 0 || x >= doc.width || y >= doc.height) continue;
+          if (x < 0 || y < 0 || x >= doc.width || y >= doc.height || !inArea(x, y)) continue;
           const c = cel[y * doc.width + x];
           if (!c) continue;
           ctx.fillStyle = toHex(c)!;
           ctx.fillRect(ox + (x + dx) * z, oy + (y + dy) * z, z, z);
         }
         ctx.globalAlpha = 1;
+      }
+      if (s.textDraft && s.tool === 'text') {
+        const d = s.textDraft;
+        const lay = layoutText(d.text || ' ', { font: s.textFont, scale: s.textScale });
+        const sc = s.textScale;
+        const paint = (color: string, offs: [number, number][]) => {
+          ctx.fillStyle = color;
+          for (const [px, py] of lay.pixels) for (const [ix, iy] of offs) ctx.fillRect(ox + (d.x + px + ix) * z, oy + (d.y + py + iy) * z, z, z);
+        };
+        if (s.textShadow) paint(s.secondary, [[sc, sc]]);
+        if (s.textOutline) paint(s.secondary, [[-sc, -sc], [0, -sc], [sc, -sc], [-sc, 0], [sc, 0], [-sc, sc], [0, sc], [sc, sc]]);
+        paint(s.primary, [[0, 0]]);
+        // caret / box
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = '#6c8cff';
+        ctx.strokeRect(ox + d.x * z - 1.5, oy + d.y * z - 1.5, Math.max(lay.width, 1) * z + 3, Math.max(lay.height, 1) * z + 3);
+        ctx.setLineDash([]);
       }
       ctx.restore();
 
@@ -265,22 +309,43 @@ export function Viewport() {
       ctx.strokeRect(ox - 0.5, oy - 0.5, W + 1, H + 1);
 
       // selection marquee
-      let sel: Selection | null = s.selection;
-      if (it?.kind === 'select') sel = rectFromCorners(it.start.x, it.start.y, it.end.x, it.end.y);
-      if (it?.kind === 'moveSel') sel = { ...it.sel, x: it.sel.x + it.end.x - it.start.x, y: it.sel.y + it.end.y - it.start.y };
-      if (sel) {
-        const t = (performance.now() / 60) % 16;
+      const t = (performance.now() / 60) % 16;
+      const ants = (path: () => void) => {
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = '#000';
-        ctx.lineDashOffset = -t;
-        ctx.strokeRect(ox + sel.x * z + 0.5, oy + sel.y * z + 0.5, sel.w * z - 1, sel.h * z - 1);
-        ctx.strokeStyle = '#fff';
-        ctx.lineDashOffset = -t + 4;
-        ctx.strokeRect(ox + sel.x * z + 0.5, oy + sel.y * z + 0.5, sel.w * z - 1, sel.h * z - 1);
+        for (const [color, off] of [['#000', 0], ['#fff', 4]] as const) {
+          ctx.beginPath();
+          path();
+          ctx.strokeStyle = color;
+          ctx.lineDashOffset = -t + off;
+          ctx.stroke();
+        }
         ctx.setLineDash([]);
         ctx.lineDashOffset = 0;
         dirty.current = true; // animate marching ants
+      };
+      let sel: Selection | null = s.selection;
+      let dx = 0, dy = 0;
+      if (it?.kind === 'moveSel') { sel = it.sel; dx = it.end.x - it.start.x; dy = it.end.y - it.start.y; }
+      if (sel) {
+        const segs = outlineOf(sel);
+        const snap = (v: number, o: number) => Math.round(o + v * z) + 0.5;
+        ants(() => {
+          for (const [x1, y1, x2, y2] of segs) {
+            ctx.moveTo(snap(x1 + dx, ox), snap(y1 + dy, oy));
+            ctx.lineTo(snap(x2 + dx, ox), snap(y2 + dy, oy));
+          }
+        });
+      }
+      if (it?.kind === 'select') {
+        const r = rectFromCorners(it.start.x, it.start.y, it.end.x, it.end.y);
+        ants(() => ctx.rect(ox + r.x * z + 0.5, oy + r.y * z + 0.5, r.w * z - 1, r.h * z - 1));
+      }
+      if (it?.kind === 'lasso' && it.points.length > 1) {
+        ants(() => {
+          it.points.forEach((p, i) => (i ? ctx.lineTo(ox + p.x * z, oy + p.y * z) : ctx.moveTo(ox + p.x * z, oy + p.y * z)));
+          ctx.closePath();
+        });
       }
 
       // Claude activity highlight
@@ -334,6 +399,7 @@ export function Viewport() {
         shape: s.brushShape,
         mirror: s.mirror,
         dither: it.dither ? 'checker' : undefined,
+        clip: clip(),
       }], it.group);
       it.queue = [it.last.x, it.last.y];
     };
@@ -353,8 +419,10 @@ export function Viewport() {
 
     const inSel = (p: Pt) => {
       const sel = getState().selection;
-      return !!sel && p.x >= sel.x && p.y >= sel.y && p.x < sel.x + sel.w && p.y < sel.y + sel.h;
+      return !!sel && regionTester(sel)(p.x, p.y);
     };
+    const selMode = (e: PointerEvent): SelMode => (e.shiftKey ? 'add' : e.ctrlKey || e.metaKey ? 'subtract' : 'replace');
+    const clip = () => selectionClip();
 
     const onDown = (e: PointerEvent) => {
       const s = getState();
@@ -368,12 +436,12 @@ export function Viewport() {
       }
       if (e.button !== 0 && e.button !== 2) return;
       const layer = activeLayer(s.doc);
-      const drawing = !['picker', 'select', 'pan'].includes(s.tool);
+      const drawing = !['picker', 'select', 'lasso', 'wand', 'pan'].includes(s.tool);
       if (drawing && (layer.locked || !layer.visible)) {
         toast(layer.locked ? `La capa "${layer.name}" está bloqueada` : `La capa "${layer.name}" está oculta`, 'error');
         return;
       }
-      if (e.altKey && s.tool !== 'select') return pick(p, e.button);
+      if (e.altKey && !['select', 'lasso', 'wand'].includes(s.tool)) return pick(p, e.button);
       switch (s.tool) {
         case 'pencil':
         case 'eraser':
@@ -387,7 +455,7 @@ export function Viewport() {
           inter.current = { kind: 'shade', points: [p.x, p.y], last: p, amount: e.button === 2 ? -s.shadeAmount : s.shadeAmount };
           break;
         case 'bucket':
-          sendOps([{ type: 'fill', x: p.x, y: p.y, color: colorFor(e.button), contiguous: s.fillContiguous }]);
+          sendOps([{ type: 'fill', x: p.x, y: p.y, color: colorFor(e.button), contiguous: s.fillContiguous, clip: clip() }]);
           break;
         case 'picker':
           pick(p, e.button);
@@ -398,12 +466,28 @@ export function Viewport() {
           inter.current = { kind: 'shape', tool: s.tool, start: p, end: p, color: colorFor(e.button) };
           break;
         case 'select':
-          if (inSel(p)) inter.current = { kind: 'moveSel', start: p, end: p, sel: s.selection!, copy: e.altKey };
+        case 'lasso':
+        case 'wand': {
+          const mode = selMode(e);
+          if (mode === 'replace' && inSel(p)) {
+            inter.current = { kind: 'moveSel', start: p, end: p, sel: s.selection!, copy: e.altKey };
+            break;
+          }
+          if (s.tool === 'select') inter.current = { kind: 'select', start: p, end: p, mode };
+          else if (s.tool === 'lasso') inter.current = { kind: 'lasso', points: [toDocF(e.clientX, e.clientY)], mode };
           else {
-            setState({ selection: null });
-            inter.current = { kind: 'select', start: p, end: p };
+            const doc = s.doc;
+            if (p.x < 0 || p.y < 0 || p.x >= doc.width || p.y >= doc.height) { if (mode === 'replace') setState({ selection: null }); break; }
+            const cel = activeLayer(doc).cels[doc.activeFrame];
+            applySel(mode, regionFromIndices(floodIndices(cel, doc.width, doc.height, p.x, p.y, s.wandContiguous), doc.width));
           }
           break;
+        }
+        case 'text': {
+          const keep = s.textDraft?.text ?? '';
+          setState({ textDraft: { x: p.x, y: p.y, text: keep } });
+          break;
+        }
         case 'move':
           inter.current = { kind: 'moveLayer', start: p, end: p };
           break;
@@ -459,6 +543,13 @@ export function Viewport() {
           it.end = p;
           requestDraw();
           break;
+        case 'lasso': {
+          const f = toDocF(e.clientX, e.clientY);
+          const last = it.points[it.points.length - 1];
+          if (Math.hypot(f.x - last.x, f.y - last.y) >= 0.35) it.points.push(f);
+          requestDraw();
+          break;
+        }
         case 'moveSel':
         case 'moveLayer':
           it.end = p;
@@ -483,27 +574,36 @@ export function Viewport() {
           inter.current = null;
           break;
         case 'shade':
-          ops.push({ type: 'shade', points: it.points, amount: it.amount, size: s.brushSize, shape: s.brushShape, mirror: s.mirror });
+          ops.push({ type: 'shade', points: it.points, amount: it.amount, size: s.brushSize, shape: s.brushShape, mirror: s.mirror, clip: clip() });
           break;
         case 'shape': {
           const { start: a, end: b } = it;
-          if (it.tool === 'line') ops.push({ type: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y, color: it.color, size: s.brushSize, mirror: s.mirror });
+          if (it.tool === 'line') ops.push({ type: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y, color: it.color, size: s.brushSize, mirror: s.mirror, clip: clip() });
           else {
             const r = rectFromCorners(a.x, a.y, b.x, b.y);
-            if (it.tool === 'rect') ops.push({ type: 'rect', ...r, color: it.color, filled: s.shapeFilled, thickness: s.brushSize, mirror: s.mirror });
-            else ops.push({ type: 'ellipse', ...r, color: it.color, filled: s.shapeFilled, mirror: s.mirror });
+            if (it.tool === 'rect') ops.push({ type: 'rect', ...r, color: it.color, filled: s.shapeFilled, thickness: s.brushSize, mirror: s.mirror, clip: clip() });
+            else ops.push({ type: 'ellipse', ...r, color: it.color, filled: s.shapeFilled, mirror: s.mirror, clip: clip() });
           }
           break;
         }
         case 'select': {
           const r = clampRect(rectFromCorners(it.start.x, it.start.y, it.end.x, it.end.y), doc);
-          setState({ selection: r && (r.w > 1 || r.h > 1) ? r : null });
+          const tiny = !r || (r.w <= 1 && r.h <= 1);
+          if (it.mode === 'replace') setState({ selection: tiny ? null : r });
+          else if (!tiny) applySel(it.mode, r);
+          break;
+        }
+        case 'lasso': {
+          const region = it.points.length > 2 ? polygonRegion(it.points, doc.width, doc.height) : null;
+          if (it.mode === 'replace') setState({ selection: region });
+          else applySel(it.mode, region);
           break;
         }
         case 'moveSel': {
           const dx = it.end.x - it.start.x, dy = it.end.y - it.start.y;
           if (dx || dy) {
-            ops.push({ type: 'moveRegion', ...it.sel, dx, dy, copy: it.copy });
+            const r = selectionClip()!;
+            ops.push({ type: 'moveRegion', x: r.x, y: r.y, w: r.w, h: r.h, mask: r.mask, dx, dy, copy: it.copy });
             setState({ selection: { ...it.sel, x: it.sel.x + dx, y: it.sel.y + dy } });
           }
           break;
@@ -564,7 +664,7 @@ export function Viewport() {
     };
   }, []);
 
-  const cursor = tool === 'pan' ? 'grab' : tool === 'move' ? 'move' : tool === 'picker' ? 'copy' : 'crosshair';
+  const cursor = tool === 'pan' ? 'grab' : tool === 'move' ? 'move' : tool === 'picker' ? 'copy' : tool === 'text' ? 'text' : 'crosshair';
   return (
     <div className="viewport" ref={wrapRef}>
       <canvas ref={canvasRef} style={{ cursor }} />

@@ -6,3 +6,6 @@ export * from './engine';
 export * from './protocol';
 export * from './text';
 export * from './gif';
+export * from './mask';
+export * from './font';
+export * from './anim';

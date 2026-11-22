@@ -109,3 +109,25 @@ export function renderPng(doc: Doc, opts: RenderOptions = {}): Buffer {
 export function autoScale(w: number, h: number, target = 512): number {
   return Math.max(1, Math.min(32, Math.floor(target / Math.max(w, h))));
 }
+
+/** All frames side by side (with a small gap) — lets the model check an animation at a glance. */
+export function renderSheetPng(doc: Doc, opts: { scale?: number; columns?: number } = {}): { png: Buffer; scale: number; columns: number } {
+  const n = doc.frames.length;
+  const columns = Math.max(1, Math.min(n, opts.columns ?? Math.min(n, 8)));
+  const rows = Math.ceil(n / columns);
+  const scale = opts.scale ?? Math.max(1, Math.min(16, Math.floor(1024 / (Math.max(doc.width * columns, doc.height * rows)))));
+  const gap = 4;
+  const fw = doc.width * scale, fh = doc.height * scale;
+  const W = columns * fw + (columns + 1) * gap, H = rows * fh + (rows + 1) * gap;
+  const out = new Uint8ClampedArray(W * H * 4);
+  for (let i = 0; i < out.length; i += 4) { out[i] = 60; out[i + 1] = 60; out[i + 2] = 80; out[i + 3] = 255; }
+  for (let f = 0; f < n; f++) {
+    const r = render(doc, { frame: f, scale, checkerboard: true });
+    const ox = gap + (f % columns) * (fw + gap), oy = gap + Math.floor(f / columns) * (fh + gap);
+    for (let y = 0; y < fh; y++) {
+      const src = y * fw * 4;
+      out.set(r.data.subarray(src, src + fw * 4), ((oy + y) * W + ox) * 4);
+    }
+  }
+  return { png: encodePng(W, H, out), scale, columns };
+}

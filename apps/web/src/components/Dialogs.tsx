@@ -161,7 +161,7 @@ function HelpDialog() {
         <ul className="shortcuts">
           <li><kbd>B</kbd> lápiz</li><li><kbd>E</kbd> borrador</li><li><kbd>G</kbd> bote</li><li><kbd>I</kbd> cuentagotas</li>
           <li><kbd>L</kbd> línea</li><li><kbd>U</kbd> rectángulo</li><li><kbd>O</kbd> elipse</li><li><kbd>D</kbd> tramado</li>
-          <li><kbd>S</kbd> sombreado</li><li><kbd>M</kbd> selección</li><li><kbd>V</kbd> mover capa</li><li><kbd>H</kbd>/<kbd>Espacio</kbd> mano</li>
+          <li><kbd>S</kbd> sombreado</li><li><kbd>M</kbd> selección</li><li><kbd>Q</kbd> lazo</li><li><kbd>W</kbd> varita mágica</li><li><kbd>T</kbd> texto</li><li><kbd>V</kbd> mover capa</li><li><kbd>H</kbd>/<kbd>Espacio</kbd> mano</li>
           <li><kbd>X</kbd> intercambiar colores</li><li><kbd>[</kbd> <kbd>]</kbd> tamaño</li><li><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd> zoom</li><li><kbd>#</kbd> cuadrícula</li>
           <li><kbd>Ctrl+Z</kbd>/<kbd>Y</kbd> deshacer/rehacer</li><li><kbd>Ctrl+C</kbd>/<kbd>X</kbd>/<kbd>V</kbd> portapapeles</li><li><kbd>,</kbd> <kbd>.</kbd> frames</li><li><kbd>Alt</kbd>+clic tomar color</li>
         </ul>

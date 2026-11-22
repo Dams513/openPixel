@@ -10,7 +10,8 @@ import {
   type Doc,
   type Op,
 } from '@openpixel/core';
-import { getState, redo, sendOps, setState, swapColors, toast, undo, type ToolId } from './store';
+import { regionTester } from '@openpixel/core';
+import { getState, redo, selectionClip, sendOps, setState, swapColors, toast, undo, type ToolId } from './store';
 import { isTyping, viewportApi } from './components/Viewport';
 
 export function download(name: string, data: Blob) {
@@ -138,19 +139,23 @@ export async function importImage(file?: File | null, asNew = false) {
 
 /* ------------------------- selection clipboard ------------------------ */
 
-let clipboard: { w: number; h: number; pixels: (string | null)[] } | null = null;
+let clipboard: { w: number; h: number; pixels: (string | null)[]; mask?: Uint8Array } | null = null;
 
 export function copySelection(cut = false) {
   const s = getState();
   const doc = s.doc;
   if (!doc) return;
   const sel = s.selection ?? { x: 0, y: 0, w: doc.width, h: doc.height };
+  const inside = regionTester(sel);
   const layer = doc.layers.find((l) => l.id === doc.activeLayerId)!;
   const cel = layer.cels[doc.activeFrame];
   const pixels: (string | null)[] = [];
-  for (let y = sel.y; y < sel.y + sel.h; y++) for (let x = sel.x; x < sel.x + sel.w; x++) pixels.push(toHex(cel[y * doc.width + x]));
-  clipboard = { w: sel.w, h: sel.h, pixels };
-  if (cut) sendOps([{ type: 'clear', ...sel }]);
+  for (let y = sel.y; y < sel.y + sel.h; y++) for (let x = sel.x; x < sel.x + sel.w; x++) {
+    const ok = inside(x, y) && x >= 0 && y >= 0 && x < doc.width && y < doc.height;
+    pixels.push(ok ? toHex(cel[y * doc.width + x]) : null);
+  }
+  clipboard = { w: sel.w, h: sel.h, pixels, mask: sel.mask };
+  if (cut) sendOps([{ type: 'clear', clip: selectionClip() }]);
   toast(cut ? 'Cortado' : 'Copiado');
 }
 
@@ -159,20 +164,31 @@ export function pasteClipboard() {
   if (!clipboard || !s.doc) return;
   const x = s.selection?.x ?? 0, y = s.selection?.y ?? 0;
   sendOps([{ type: 'paste', x, y, width: clipboard.w, height: clipboard.h, pixels: clipboard.pixels, skipTransparent: true }]);
-  setState({ selection: { x, y, w: clipboard.w, h: clipboard.h }, tool: 'select' });
+  setState({ selection: { x, y, w: clipboard.w, h: clipboard.h, mask: clipboard.mask }, tool: 'select' });
 }
 
 export function deleteSelection() {
   const s = getState();
   if (!s.doc) return;
-  sendOps([s.selection ? { type: 'clear', ...s.selection } : { type: 'clear' }]);
+  sendOps([{ type: 'clear', clip: selectionClip() }]);
+}
+
+export function commitText() {
+  const s = getState();
+  const d = s.textDraft;
+  if (!d || !d.text.trim()) return;
+  sendOps([{
+    type: 'text', x: d.x, y: d.y, text: d.text, color: s.primary, font: s.textFont, scale: s.textScale,
+    outline: s.textOutline ? s.secondary : undefined, shadow: s.textShadow ? s.secondary : undefined, clip: selectionClip(),
+  }]);
+  setState({ textDraft: null });
 }
 
 /* ----------------------------- shortcuts ------------------------------ */
 
 const TOOL_KEYS: Record<string, ToolId> = {
   b: 'pencil', e: 'eraser', g: 'bucket', i: 'picker', l: 'line', u: 'rect', o: 'ellipse',
-  m: 'select', v: 'move', d: 'dither', s: 'shade', h: 'pan',
+  m: 'select', q: 'lasso', w: 'wand', t: 'text', v: 'move', d: 'dither', s: 'shade', h: 'pan',
 };
 
 export function installShortcuts() {
@@ -202,7 +218,8 @@ export function installShortcuts() {
       case '0': viewportApi.fit(); break;
       case '#': setState((s) => ({ showGrid: !s.showGrid })); break;
       case 'Delete': case 'Backspace': deleteSelection(); break;
-      case 'Escape': setState({ selection: null }); break;
+      case 'Escape': setState({ selection: null, textDraft: null }); break;
+      case 'Enter': if (getState().textDraft) commitText(); break;
       case ',': stepFrame(-1); break;
       case '.': stepFrame(1); break;
     }
