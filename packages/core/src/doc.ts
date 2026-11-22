@@ -30,6 +30,19 @@ export interface Doc {
 }
 
 export const MAX_SIZE = 1024;
+export const MAX_LAYERS = 64;
+export const MAX_FRAMES = 256;
+/** Upper bound for width * height * layers * frames (≈ 256 MB of pixels). */
+export const MAX_TOTAL_PIXELS = 64 * 1024 * 1024;
+
+/** Throw if a document with these dimensions would exceed the safety limits. */
+export function checkBudget(width: number, height: number, layers: number, frames: number) {
+  if (layers > MAX_LAYERS) throw new Error(`Demasiadas capas (máximo ${MAX_LAYERS})`);
+  if (frames > MAX_FRAMES) throw new Error(`Demasiados frames (máximo ${MAX_FRAMES})`);
+  if (width * height * Math.max(1, layers) * Math.max(1, frames) > MAX_TOTAL_PIXELS) {
+    throw new Error('El documento es demasiado grande (reduce tamaño, capas o frames)');
+  }
+}
 
 export const DEFAULT_PALETTE = [
   '#000000', '#1d1d2b', '#3b3b54', '#5d5d7a', '#8b8ba8', '#c2c2d6', '#ffffff', '#f4e1c1',
@@ -247,11 +260,13 @@ export function serializeDoc(doc: Doc): SerializedDoc {
 export function deserializeDoc(data: SerializedDoc): Doc {
   if (!data || data.format !== 'openpixel') throw new Error('Archivo no es un documento openPixel');
   checkSize(data.width, data.height);
+  if (!Array.isArray(data.layers) || (data.frames !== undefined && !Array.isArray(data.frames))) throw new Error('Documento openPixel dañado');
+  checkBudget(data.width, data.height, data.layers.length, data.frames?.length ?? 1);
   const n = data.width * data.height;
   const frames = data.frames?.length ? data.frames.map((f) => ({ id: f.id || makeId('frame'), duration: f.duration || 100 })) : [{ id: makeId('frame'), duration: 100 }];
   const layers: Layer[] = data.layers.map((l) => ({
-    id: l.id,
-    name: l.name,
+    id: String(l.id).slice(0, 64),
+    name: String(l.name ?? 'Capa').slice(0, 64),
     visible: l.visible !== false,
     opacity: typeof l.opacity === 'number' ? l.opacity : 1,
     locked: !!l.locked,
@@ -265,12 +280,12 @@ export function deserializeDoc(data: SerializedDoc): Doc {
   }));
   if (!layers.length) layers.push(createLayer(data.width, data.height, frames.length, 'Capa 1'));
   return {
-    name: data.name || 'Sin título',
+    name: String(data.name || 'Sin título').slice(0, 100),
     width: data.width,
     height: data.height,
     layers,
     frames,
-    palette: data.palette?.length ? [...data.palette] : [...DEFAULT_PALETTE],
+    palette: Array.isArray(data.palette) && data.palette.length ? data.palette.slice(0, 256).map((c) => String(c).slice(0, 16)) : [...DEFAULT_PALETTE],
     activeLayerId: layers.some((l) => l.id === data.activeLayerId) ? data.activeLayerId : layers[layers.length - 1].id,
     activeFrame: Math.min(Math.max(0, data.activeFrame | 0), frames.length - 1),
   };

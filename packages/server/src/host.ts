@@ -25,6 +25,7 @@ import {
   encodeGif,
   compositePacked,
 } from '@openpixel/core';
+import { safePath } from './security';
 import { autoScale, renderPng, renderSheetPng, type RenderOptions } from './png';
 
 export const log = (...a: unknown[]) => console.error('[openpixel]', ...a);
@@ -242,8 +243,7 @@ export class Host {
 
   /** Write the current image to disk as .png, .gif (animation) or .opx (project). */
   exportFile(path: string, o: { scale?: number; frame?: number | string; layer?: number | string } = {}) {
-    if (!path) throw new Error('Falta la ruta');
-    const abs = resolve(path.replace(/^~(?=$|[\\/])/, homedir()));
+    const abs = safePath(path, 'write');
     const ext = extname(abs).toLowerCase();
     mkdirSync(dirname(abs), { recursive: true });
     const scale = Math.max(1, Math.min(64, Math.floor(o.scale ?? 1)));
@@ -260,8 +260,13 @@ export class Host {
   }
 
   openFile(path: string) {
-    const abs = resolve(path.replace(/^~(?=$|[\\/])/, homedir()));
-    const data = JSON.parse(readFileSync(abs, 'utf8')) as SerializedDoc;
+    const abs = safePath(path, 'read');
+    let data: SerializedDoc;
+    try {
+      data = JSON.parse(readFileSync(abs, 'utf8')) as SerializedDoc;
+    } catch {
+      throw new Error('El archivo no es un proyecto openPixel válido');
+    }
     this.apply([{ type: 'load', doc: data }], { label: 'abrir' });
     return { opened: abs };
   }
