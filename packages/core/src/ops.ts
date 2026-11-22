@@ -13,6 +13,9 @@ import {
   type SerializedDoc,
 } from './doc';
 import { brush, ditherOn, ellipse, floodIndices, line, rect, roundBrush } from './raster';
+import { fromRegion, regionTester, type Region } from './mask';
+import { layoutText } from './font';
+import { animationFrameCount, generateAnimation, type AnimPreset } from './anim';
 
 export type LayerRef = string | number;
 export type FrameRef = string | number;
@@ -23,6 +26,8 @@ interface Target {
   layer?: LayerRef;
   /** Frame index or id. Defaults to the active frame. */
   frame?: FrameRef;
+  /** Only pixels inside this region can change (the editor's selection). */
+  clip?: Region;
 }
 
 export type BrushShape = 'square' | 'round';
@@ -45,7 +50,12 @@ export type Op =
   | (Target & { type: 'rotate'; dir: 'cw' | 'ccw' | '180' })
   | (Target & { type: 'shift'; dx: number; dy: number; wrap?: boolean })
   | (Target & { type: 'paste'; x: number; y: number; width: number; height: number; pixels: Color[]; skipTransparent?: boolean })
-  | (Target & { type: 'moveRegion'; x: number; y: number; w: number; h: number; dx: number; dy: number; copy?: boolean })
+  | (Target & { type: 'moveRegion'; x: number; y: number; w: number; h: number; dx: number; dy: number; copy?: boolean; mask?: string })
+  | (Target & {
+      type: 'text'; x: number; y: number; text: string; color: Color;
+      font?: string; scale?: number; spacing?: number; lineSpacing?: number;
+      align?: 'left' | 'center' | 'right'; outline?: Color; shadow?: Color;
+    })
   | { type: 'addLayer'; id?: string; name?: string; index?: number }
   | { type: 'duplicateLayer'; layer?: LayerRef; id?: string }
   | { type: 'deleteLayer'; layer?: LayerRef }
@@ -59,6 +69,12 @@ export type Op =
   | { type: 'setPalette'; colors: string[] }
   | { type: 'resize'; width: number; height: number; anchor?: Anchor }
   | { type: 'rename'; name: string }
+  /** Generate animation frames from the sprite on a layer (see anim.ts). */
+  | {
+      type: 'animate'; preset: AnimPreset; layer?: LayerRef; frame?: FrameRef;
+      mode?: 'replace' | 'append'; duration?: number; intensity?: number;
+      facing?: 'right' | 'left'; legSplit?: number; ids?: string[];
+    }
   | { type: 'load'; doc: SerializedDoc }
   /** Changes the active layer/frame. Not recorded in history. */
   | { type: 'select'; layer?: LayerRef; frame?: FrameRef };
@@ -69,7 +85,7 @@ export type Anchor = 'top-left' | 'top' | 'top-right' | 'left' | 'center' | 'rig
 
 export const STRUCTURAL_OPS: ReadonlySet<OpType> = new Set<OpType>([
   'addLayer', 'duplicateLayer', 'deleteLayer', 'updateLayer', 'moveLayer', 'mergeDown',
-  'addFrame', 'deleteFrame', 'moveFrame', 'updateFrame', 'setPalette', 'resize', 'rename', 'load',
+  'addFrame', 'deleteFrame', 'moveFrame', 'updateFrame', 'setPalette', 'resize', 'rename', 'load', 'animate',
 ]);
 
 export type Change =
@@ -86,6 +102,8 @@ export function normalizeOp(op: Op): Op {
       return op.id ? op : { ...op, id: makeId('layer') };
     case 'addFrame':
       return op.id ? op : { ...op, id: makeId('frame') };
+    case 'animate':
+      return op.ids ? op : { ...op, ids: Array.from({ length: animationFrameCount(op.preset) }, () => makeId('frame')) };
     default:
       return op;
   }
@@ -95,8 +113,15 @@ let openPatches: PixelPatch[] | null = null;
 
 class PixelPatch {
   private before = new Map<number, number>();
-  constructor(readonly doc: Doc, readonly layer: Layer, readonly frame: number, readonly buf: Uint32Array) {}
+  private inClip: ((x: number, y: number) => boolean) | null;
+  constructor(readonly doc: Doc, readonly layer: Layer, readonly frame: number, readonly buf: Uint32Array, clip?: Region) {
+    this.inClip = clip ? regionTester(fromRegion(clip)) : null;
+  }
   set(i: number, c: RGBA) {
+    if (this.inClip) {
+      const x = i % this.doc.width;
+      if (!this.inClip(x, (i - x) / this.doc.width)) return;
+    }
     const cur = this.buf[i];
     if (cur === c) return;
     if (!this.before.has(i)) this.before.set(i, cur);
@@ -126,11 +151,11 @@ class PixelPatch {
   }
 }
 
-function target(doc: Doc, t: Target): PixelPatch {
+function target(doc: Doc, t: Target, useClip = true): PixelPatch {
   const layer = findLayer(doc, t.layer);
   const frame = findFrameIndex(doc, t.frame);
   if (layer.locked) throw new Error(`La capa "${layer.name}" está bloqueada`);
-  const p = new PixelPatch(doc, layer, frame, layer.cels[frame]);
+  const p = new PixelPatch(doc, layer, frame, layer.cels[frame], useClip ? t.clip : undefined);
   openPatches?.push(p);
   return p;
 }
@@ -245,7 +270,7 @@ function applyPixelOp(doc: Doc, op: Op): Change[] {
       const layers = op.allLayers ? doc.layers.filter((l) => !l.locked) : [findLayer(doc, op.layer)];
       const out: Change[] = [];
       for (const layer of layers) {
-        const p = target(doc, { layer: layer.id, frame });
+        const p = target(doc, { layer: layer.id, frame, clip: op.clip });
         for (let i = 0; i < p.buf.length; i++) if (p.buf[i] === from) p.set(i, to);
         out.push(...single(p));
       }
@@ -309,17 +334,37 @@ function applyPixelOp(doc: Doc, op: Op): Change[] {
       return single(p);
     }
     case 'moveRegion': {
-      const p = target(doc, op);
+      const p = target(doc, op, false);
       const { width: W, height: H } = doc;
       const x0 = Math.max(0, op.x), y0 = Math.max(0, op.y);
       const x1 = Math.min(W, op.x + op.w), y1 = Math.min(H, op.y + op.h);
+      const inside = regionTester(fromRegion({ x: op.x, y: op.y, w: op.w, h: op.h, mask: op.mask }));
       const pix: { x: number; y: number; c: RGBA }[] = [];
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        if (!inside(x, y)) continue;
         const c = p.get(x, y);
         pix.push({ x, y, c });
         if (!op.copy) p.plot(x, y, TRANSPARENT);
       }
       for (const { x, y, c } of pix) if (c !== TRANSPARENT) p.plot(x + op.dx, y + op.dy, c);
+      return single(p);
+    }
+    case 'text': {
+      const p = target(doc, op);
+      const c = parseColor(op.color);
+      const outline = op.outline !== undefined && op.outline !== null ? parseColor(op.outline) : null;
+      const shadow = op.shadow !== undefined && op.shadow !== null ? parseColor(op.shadow) : null;
+      const s = Math.max(1, Math.min(16, Math.floor(op.scale ?? 1)));
+      const lay = layoutText(String(op.text ?? ''), { font: op.font, scale: s, spacing: op.spacing, lineSpacing: op.lineSpacing, align: op.align });
+      const ox = int(op.x, 'x') - (op.align === 'center' ? Math.floor(lay.width / 2) : op.align === 'right' ? lay.width : 0);
+      const oy = int(op.y, 'y');
+      if (shadow !== null) for (const [x, y] of lay.pixels) p.plot(ox + x + s, oy + y + s, shadow);
+      if (outline !== null) {
+        for (const [x, y] of lay.pixels) for (let j = -s; j <= s; j += s) for (let i = -s; i <= s; i += s) {
+          if (i || j) p.plot(ox + x + i, oy + y + j, outline);
+        }
+      }
+      for (const [x, y] of lay.pixels) p.plot(ox + x, oy + y, c);
       return single(p);
     }
     default:
@@ -455,6 +500,29 @@ function applyStructural(doc: Doc, op: Op) {
     case 'rename':
       doc.name = String(op.name).slice(0, 100) || doc.name;
       break;
+    case 'animate': {
+      const layer = findLayer(doc, op.layer);
+      const src = findFrameIndex(doc, op.frame);
+      const gen = generateAnimation(layer.cels[src], doc.width, doc.height, op.preset,
+        { intensity: op.intensity, facing: op.facing, legSplit: op.legSplit }, op.duration);
+      const ids = op.ids ?? gen.cels.map(() => makeId('frame'));
+      const frames = gen.cels.map((_, i) => ({ id: ids[i] ?? makeId('frame'), duration: gen.durations[i] }));
+      const others = doc.layers.filter((l) => l !== layer).map((l) => [l, l.cels[src]] as const);
+      if (op.mode === 'append') {
+        const at = doc.frames.length;
+        doc.frames.push(...frames);
+        layer.cels.push(...gen.cels);
+        for (const [l, cel] of others) for (let i = 0; i < frames.length; i++) l.cels.push(cel.slice());
+        doc.activeFrame = at;
+      } else {
+        doc.frames = frames;
+        layer.cels = gen.cels;
+        for (const [l, cel] of others) l.cels = frames.map(() => cel.slice());
+        doc.activeFrame = 0;
+      }
+      doc.activeLayerId = layer.id;
+      break;
+    }
     case 'load': {
       const fresh = deserializeDoc(op.doc);
       Object.assign(doc, fresh);

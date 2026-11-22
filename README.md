@@ -60,7 +60,11 @@ Variables opcionales: `OPENPIXEL_PORT` (puerto, 5577 por defecto), `OPENPIXEL_HO
 | `new_canvas`, `resize_canvas` | Crear o redimensionar el lienzo |
 | `draw_grid` | Dibujar sprites con filas de caracteres y un legend de colores |
 | `draw_pixels`, `draw_line`, `draw_rect`, `draw_ellipse`, `fill` | Píxeles sueltos, figuras y relleno |
+| `draw_text` | Texto con fuentes pixel (5×7 con acentos y ñ, mini 3×5), contorno y sombra; `measure` mide sin dibujar |
 | `replace_color`, `clear`, `transform_layer`, `move_region` | Editar lo que ya está dibujado |
+| `animate_sprite` | Genera una animación completa en un paso desde el sprite de una capa: `idle`, `walk`, `run`, `jump`, `bounce`, `float`, `shake`, `spin`, `pulse`, `attack`, `hurt` |
+| `create_animation` | Claude dibuja cada pose (filas + legend) y se crean todos los frames en una llamada |
+| `view_animation` | Imagen con todos los frames lado a lado, para revisar la animación |
 | `layer`, `frame` | Gestionar capas y frames de animación |
 | `set_palette` | Cambiar la paleta |
 | `batch` | Muchas operaciones en una llamada atómica (un solo paso de deshacer) |
@@ -70,10 +74,12 @@ Variables opcionales: `OPENPIXEL_PORT` (puerto, 5577 por defecto), `OPENPIXEL_HO
 
 ## Funciones del editor
 
-- **Herramientas:** lápiz, borrador, bote (contiguo o global), cuentagotas, línea, rectángulo y elipse (contorno o relleno; Mayús para proporciones perfectas), tramado (dither), sombreado (aclarar u oscurecer), selección (mover, copiar, cortar, pegar, borrar), mover capa y mano.
+- **Herramientas:** lápiz, borrador, bote (contiguo o global), cuentagotas, línea, rectángulo y elipse (contorno o relleno; Mayús para proporciones perfectas), tramado (dither), sombreado (aclarar u oscurecer), texto, mover capa y mano.
+- **Selección:** rectangular, lazo (libre) y varita mágica (por color, contigua o global). Mayús suma y Ctrl resta a la selección. Se puede mover (Alt copia), copiar, cortar, pegar y borrar. Mientras hay una selección, todo lo que se dibuja queda dentro de ella.
+- **Texto:** dos fuentes pixel (5×7 con minúsculas, acentos, ñ, ¿ ¡ y símbolos; mini 3×5), escala, contorno y sombra, con vista previa en vivo.
 - **Opciones de pincel:** tamaño 1–32, pincel cuadrado o redondo, espejo horizontal, vertical o en ambos ejes.
 - **Capas:** visibilidad, bloqueo, opacidad, renombrar, reordenar, duplicar, combinar hacia abajo.
-- **Animación:** frames, duración por frame (fps), papel cebolla y vista previa animada.
+- **Animación:** frames, duración por frame (fps), papel cebolla y vista previa animada. El menú **✨ Animar capa…** genera en un clic caminar, correr, saltar, rebotar, flotar, temblar, girar, latir, atacar o recibir daño a partir del sprite de la capa activa.
 - **Lienzo y vista:** zoom y paneo, cuadrícula, voltear y rotar, redimensionar con anclaje.
 - **Color:** principal y secundario, paletas predefinidas, paleta editable.
 - **Archivos:** abrir y guardar `.opx`, importar imágenes, exportar PNG escalado, GIF animado y spritesheet.

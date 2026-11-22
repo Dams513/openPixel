@@ -381,3 +381,23 @@ kbd {
   .frames-controls { grid-template-columns: repeat(10, auto); }
   .preview { display: none; }
 }
+
+/* text tool & animation */
+.text-input {
+  width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.text-input:focus { outline: none; border-color: var(--accent); }
+.text-input:disabled { opacity: 0.6; }
+.mini-select, .anim-select {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.anim-select { grid-column: span 3; margin-top: 2px; max-width: 150px; }
+.mini-num { width: 48px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); }
+.tool { width: 34px; height: 34px; }

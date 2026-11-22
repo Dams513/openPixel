@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Copy, Layers2, Pause, Play, Plus, Trash2 } from 'lucide-react';
-import { compositePacked, packedToBytes } from '@openpixel/core';
-import { getState, sendOps, setState, useStore } from '../store';
+import { ANIM_INFO, ANIM_PRESETS, activeLayer, compositePacked, packedToBytes, type AnimPreset } from '@openpixel/core';
+import { getState, sendOps, setState, toast, useStore } from '../store';
 import { Thumb } from './Thumb';
 
 /** Animated preview of all frames. */
@@ -74,6 +74,24 @@ export function FramesPanel() {
           />
           fps
         </label>
+        <select
+          className="anim-select"
+          aria-label="Generar animación"
+          title="Genera la animación a partir del sprite de la capa activa (reemplaza los frames; Ctrl+Z deshace)"
+          value=""
+          onChange={(e) => {
+            const preset = e.target.value as AnimPreset;
+            if (!preset) return;
+            const d = getState().doc!;
+            const layer = activeLayer(d);
+            sendOps([{ type: 'animate', preset, layer: layer.id }]);
+            toast(`Animación "${ANIM_INFO[preset].label}" generada desde "${layer.name}" · Ctrl+Z deshace`);
+            setState({ playing: true });
+          }}
+        >
+          <option value="">✨ Animar capa…</option>
+          {ANIM_PRESETS.map((p) => <option key={p} value={p}>{ANIM_INFO[p].label} ({ANIM_INFO[p].frames})</option>)}
+        </select>
         <button
           className="text-btn"
           title="Aplicar esta velocidad a todos los frames"

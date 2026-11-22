@@ -25,7 +25,7 @@ import {
   encodeGif,
   compositePacked,
 } from '@openpixel/core';
-import { autoScale, renderPng, type RenderOptions } from './png';
+import { autoScale, renderPng, renderSheetPng, type RenderOptions } from './png';
 
 export const log = (...a: unknown[]) => console.error('[openpixel]', ...a);
 
@@ -230,6 +230,12 @@ export class Host {
     return { base64: renderPng(this.doc, opts).toString('base64'), scale: opts.scale };
   }
 
+  /** Every frame side by side. */
+  sheet(o: { scale?: number; columns?: number } = {}) {
+    const r = renderSheetPng(this.doc, o);
+    return { base64: r.png.toString('base64'), scale: r.scale, columns: r.columns, frames: this.doc.frames.map((f, i) => ({ index: i, duration: f.duration })) };
+  }
+
   pixels(o: TextRegionOptions = {}) {
     return regionToText(this.doc, o);
   }
@@ -276,6 +282,7 @@ export class Host {
       case 'info': return this.info();
       case 'image': return this.image(p);
       case 'pixels': return this.pixels(p);
+      case 'sheet': return this.sheet(p);
       case 'export': return this.exportFile(p.path, p);
       case 'open': return this.openFile(p.path);
       case 'new': return this.newCanvas(p.width, p.height, p.background, p.name);
