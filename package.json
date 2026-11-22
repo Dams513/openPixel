@@ -1,0 +1,26 @@
+{
+  "name": "openpixel",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Editor de pixel art local con servidor MCP para que Claude dibuje contigo en tiempo real.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @openpixel/web && npm run build -w @openpixel/server",
+    "start": "node packages/server/dist/main.js",
+    "dev": "node scripts/dev.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p packages/core && tsc -p packages/server && tsc -p apps/web"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~5.9.3",
+    "vitest": "^5.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
