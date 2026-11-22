@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { DEFAULT_PORT } from '@openpixel/core';
 import { Host, log } from './host';
+import { hostAllowed as hostOk, insideRoot, originAllowed as originOk, SECURITY_HEADERS } from './security';
 
 export const RPC_HEADER = 'x-openpixel';
 export const HOST = '127.0.0.1';
@@ -34,26 +35,12 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-/** Only accept requests addressed to localhost (blocks DNS-rebinding). */
-function hostAllowed(req: IncomingMessage) {
-  const h = (req.headers.host ?? '').replace(/:\d+$/, '').toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
-}
-
-/** Browsers always send Origin on WebSocket; only allow our own pages. */
-function originAllowed(req: IncomingMessage) {
-  const o = req.headers.origin;
-  if (!o) return true;
-  try {
-    const u = new URL(o);
-    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
-  } catch {
-    return false;
-  }
-}
+const hostAllowed = (req: IncomingMessage) => hostOk(req.headers.host);
+const originAllowed = (req: IncomingMessage, port: number) => originOk(req.headers.origin, port);
+const MAX_CLIENTS = 32;
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -74,15 +61,23 @@ function readBody(req: IncomingMessage, limit = 32 * 1024 * 1024): Promise<strin
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const root = webDir();
   if (!existsSync(join(root, 'index.html'))) {
-    res.writeHead(503, { 'content-type': 'text/html; charset=utf-8' });
+    res.writeHead(503, { ...SECURITY_HEADERS, 'content-type': 'text/html; charset=utf-8' });
     res.end(`<h1>openPixel</h1><p>El editor web no está compilado. Ejecuta <code>npm run build</code> en la carpeta del proyecto.</p>`);
     return;
   }
   const url = new URL(req.url ?? '/', 'http://localhost');
-  let file = normalize(join(root, decodeURIComponent(url.pathname)));
-  if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    res.writeHead(400, SECURITY_HEADERS); res.end(); return;
+  }
+  if (pathname.includes('\0')) { res.writeHead(400, SECURITY_HEADERS); res.end(); return; }
+  let file = normalize(join(root, pathname));
+  if (!insideRoot(file, root)) { res.writeHead(403, SECURITY_HEADERS); res.end(); return; }
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(root, 'index.html');
   res.writeHead(200, {
+    ...SECURITY_HEADERS,
     'content-type': MIME[extname(file)] ?? 'application/octet-stream',
     'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
   });
@@ -102,7 +97,8 @@ export function startServer(host: Host, port = getPort()): Promise<RunningServer
   wss.on('connection', (ws) => host.attach(ws));
 
   const server = createServer(async (req, res) => {
-    if (!hostAllowed(req)) { res.writeHead(403); res.end('Host no permitido'); return; }
+    if (!hostAllowed(req)) { res.writeHead(403, SECURITY_HEADERS); res.end('Host no permitido'); return; }
+    if (!originAllowed(req, port)) return sendJson(res, 403, { error: 'Origen no permitido' });
     const path = (req.url ?? '/').split('?')[0];
     if (path === '/api/health') {
       const mcpPath = resolve(dirname(fileURLToPath(import.meta.url)), 'mcp.js');
@@ -111,7 +107,8 @@ export function startServer(host: Host, port = getPort()): Promise<RunningServer
     if (path === '/api/rpc') {
       // The custom header forces a CORS preflight that we never approve, so
       // other websites cannot call the RPC from a browser.
-      if (req.method !== 'POST' || req.headers[RPC_HEADER] !== '1') return sendJson(res, 403, { error: 'Prohibido' });
+      const json = (req.headers['content-type'] ?? '').startsWith('application/json');
+      if (req.method !== 'POST' || req.headers[RPC_HEADER] !== '1' || !json) return sendJson(res, 403, { error: 'Prohibido' });
       try {
         const { method, params } = JSON.parse(await readBody(req));
         const result = await host.rpc(method, params ?? {});
@@ -120,12 +117,12 @@ export function startServer(host: Host, port = getPort()): Promise<RunningServer
         return sendJson(res, 200, { error: (e as Error).message });
       }
     }
-    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, SECURITY_HEADERS); res.end(); return; }
     serveStatic(req, res);
   });
 
   server.on('upgrade', (req, socket, head) => {
-    if (!hostAllowed(req) || !originAllowed(req) || (req.url ?? '').split('?')[0] !== '/ws') {
+    if (!hostAllowed(req) || !originAllowed(req, port) || (req.url ?? '').split('?')[0] !== '/ws' || wss.clients.size >= MAX_CLIENTS) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;

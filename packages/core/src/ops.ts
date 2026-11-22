@@ -1,6 +1,7 @@
 import { parseColor, shade, TRANSPARENT, type RGBA } from './color';
 import {
   activeLayer,
+  checkBudget,
   checkSize,
   cloneDoc,
   createLayer,
@@ -355,6 +356,7 @@ function applyPixelOp(doc: Doc, op: Op): Change[] {
       const outline = op.outline !== undefined && op.outline !== null ? parseColor(op.outline) : null;
       const shadow = op.shadow !== undefined && op.shadow !== null ? parseColor(op.shadow) : null;
       const s = Math.max(1, Math.min(16, Math.floor(op.scale ?? 1)));
+      if (String(op.text ?? '').length > 2000) throw new Error('Texto demasiado largo (máximo 2000 caracteres)');
       const lay = layoutText(String(op.text ?? ''), { font: op.font, scale: s, spacing: op.spacing, lineSpacing: op.lineSpacing, align: op.align });
       const ox = int(op.x, 'x') - (op.align === 'center' ? Math.floor(lay.width / 2) : op.align === 'right' ? lay.width : 0);
       const oy = int(op.y, 'y');
@@ -387,6 +389,7 @@ function applyStructural(doc: Doc, op: Op) {
   const n = doc.width * doc.height;
   switch (op.type) {
     case 'addLayer': {
+      checkBudget(doc.width, doc.height, doc.layers.length + 1, doc.frames.length);
       const layer = createLayer(doc.width, doc.height, doc.frames.length, op.name || `Capa ${doc.layers.length + 1}`, op.id);
       const activeIdx = doc.layers.indexOf(activeLayer(doc));
       const idx = op.index ?? activeIdx + 1;
@@ -395,6 +398,7 @@ function applyStructural(doc: Doc, op: Op) {
       break;
     }
     case 'duplicateLayer': {
+      checkBudget(doc.width, doc.height, doc.layers.length + 1, doc.frames.length);
       const src = findLayer(doc, op.layer);
       const copy: Layer = { ...src, id: op.id ?? makeId('layer'), name: `${src.name} copia`, locked: false, cels: src.cels.map((c) => c.slice()) };
       doc.layers.splice(doc.layers.indexOf(src) + 1, 0, copy);
@@ -442,6 +446,7 @@ function applyStructural(doc: Doc, op: Op) {
       break;
     }
     case 'addFrame': {
+      checkBudget(doc.width, doc.height, doc.layers.length, doc.frames.length + 1);
       const idx = Math.max(0, Math.min(doc.frames.length, op.index ?? doc.activeFrame + 1));
       const srcFrame = doc.activeFrame;
       doc.frames.splice(idx, 0, { id: op.id ?? makeId('frame'), duration: op.duration ?? doc.frames[srcFrame]?.duration ?? 100 });
@@ -472,6 +477,7 @@ function applyStructural(doc: Doc, op: Op) {
       break;
     }
     case 'setPalette': {
+      if (!Array.isArray(op.colors) || op.colors.length > 256) throw new Error('La paleta admite hasta 256 colores');
       doc.palette = op.colors.map((c) => {
         parseColor(c);
         return c.startsWith('#') ? c.toLowerCase() : c;
@@ -480,6 +486,7 @@ function applyStructural(doc: Doc, op: Op) {
     }
     case 'resize': {
       checkSize(op.width, op.height);
+      checkBudget(op.width, op.height, doc.layers.length, doc.frames.length);
       const [ax, ay] = ANCHORS[op.anchor ?? 'top-left'] ?? ANCHORS['top-left'];
       const ox = Math.round((op.width - doc.width) * ax);
       const oy = Math.round((op.height - doc.height) * ay);
@@ -508,6 +515,7 @@ function applyStructural(doc: Doc, op: Op) {
       const ids = op.ids ?? gen.cels.map(() => makeId('frame'));
       const frames = gen.cels.map((_, i) => ({ id: ids[i] ?? makeId('frame'), duration: gen.durations[i] }));
       const others = doc.layers.filter((l) => l !== layer).map((l) => [l, l.cels[src]] as const);
+      checkBudget(doc.width, doc.height, doc.layers.length, (op.mode === 'append' ? doc.frames.length : 0) + frames.length);
       if (op.mode === 'append') {
         const at = doc.frames.length;
         doc.frames.push(...frames);

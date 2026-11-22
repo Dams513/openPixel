@@ -6,51 +6,161 @@ Editor de pixel art **local** en el navegador, con un servidor **MCP** para que 
 Claude ──MCP (stdio)──▶ servidor openPixel (Node) ──WebSocket──▶ editor en el navegador
 ```
 
-## Instalación
+## Instalación paso a paso
 
-Requiere Node.js 20 o superior.
+Se instala una sola vez. Toma unos 5 minutos.
+
+### Paso 1. Instalar Node.js
+
+1. Entra a <https://nodejs.org> y descarga la versión **LTS** (20 o superior).
+2. Instálala con las opciones por defecto (en Windows deja marcada la opción *Add to PATH*).
+3. Abre una terminal nueva:
+   - **Windows:** menú Inicio → escribe `PowerShell` → Enter.
+   - **macOS:** Aplicaciones → Utilidades → Terminal.
+4. Comprueba que quedó instalado:
+
+   ```bash
+   node -v
+   ```
+
+   Debe mostrar algo como `v22.x.x`. Si dice "no se reconoce", cierra la terminal, ábrela de nuevo o reinicia la computadora.
+
+### Paso 2. Descargar openPixel
+
+**Opción A: con Git (recomendada, se actualiza más fácil).** Si no tienes Git, instálalo desde <https://git-scm.com>.
+
+```bash
+git clone https://github.com/Dams513/openPixel.git
+```
+
+**Opción B: ZIP.** En GitHub pulsa **Code → Download ZIP** y descomprímelo. Evita dejarlo dentro de *Descargas* si luego vas a borrar esa carpeta; por ejemplo, muévelo a tu carpeta de usuario (`C:\Users\TU_USUARIO\openPixel`).
+
+### Paso 3. Instalar dependencias y compilar
+
+En la terminal entra a la carpeta del proyecto (la que contiene `package.json`) y ejecuta:
+
+```bash
+cd openPixel
+```
 
 ```bash
 npm install
+```
+
+```bash
 npm run build
 ```
 
-## Usar el editor
+Al terminar debe existir el archivo `packages/server/dist/mcp.js`.
+
+### Paso 4. Probar el editor
 
 ```bash
 npm start
 ```
 
-Abre <http://localhost:5577>. El dibujo se autoguarda en `~/.openpixel/autosave.opx`.
+Abre <http://localhost:5577> en tu navegador. El dibujo se guarda solo en `~/.openpixel/autosave.opx` (en Windows, `C:\Users\TU_USUARIO\.openpixel\`). Para cerrar el servidor pulsa `Ctrl + C` en la terminal.
 
-## Conectar Claude
+### Paso 5. Obtener la ruta del servidor MCP
 
-El servidor MCP está en `packages/server/dist/mcp.js` (ruta absoluta). El botón **?** del editor muestra la ruta exacta con un botón para copiarla.
+Claude necesita la **ruta completa** de `mcp.js`. Ejecuta esto dentro de la carpeta del proyecto:
 
-**Claude Code**
+- **Windows (PowerShell):**
+
+  ```bash
+  (Resolve-Path packages\server\dist\mcp.js).Path
+  ```
+
+- **macOS / Linux:**
+
+  ```bash
+  realpath packages/server/dist/mcp.js
+  ```
+
+También puedes verla en el editor: botón **?** → *Conectar Claude*.
+
+### Paso 6. Conectar Claude
+
+#### Claude Desktop
+
+1. Abre Claude Desktop → **Ajustes** (Settings) → **Desarrollador** (Developer) → **Editar configuración** (Edit Config). Se abre el archivo `claude_desktop_config.json`:
+   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+2. Pega esto, cambiando la ruta por la del paso 5:
+
+   **Windows** (cada `\` se escribe doble `\\`):
+
+   ```json
+   {
+     "mcpServers": {
+       "openpixel": {
+         "command": "node",
+         "args": ["C:\\Users\\TU_USUARIO\\openPixel\\packages\\server\\dist\\mcp.js"]
+       }
+     }
+   }
+   ```
+
+   **macOS:**
+
+   ```json
+   {
+     "mcpServers": {
+       "openpixel": {
+         "command": "node",
+         "args": ["/Users/TU_USUARIO/openPixel/packages/server/dist/mcp.js"]
+       }
+     }
+   }
+   ```
+
+   Si ya tenías otros servidores en `mcpServers`, agrega `"openpixel": {...}` junto a ellos, separado por una coma.
+3. Guarda el archivo y **cierra Claude Desktop por completo**: en Windows, clic derecho en su ícono junto al reloj → *Salir*; en macOS, `Cmd + Q`. Luego vuelve a abrirlo.
+4. En un chat nuevo, el ícono de herramientas debe mostrar las de **openpixel**.
+
+#### Claude Code
 
 ```bash
-claude mcp add openpixel -- node /RUTA/ABSOLUTA/openPixel/packages/server/dist/mcp.js
+claude mcp add openpixel -s user -- node "/RUTA/COMPLETA/openPixel/packages/server/dist/mcp.js"
 ```
 
-**Claude Desktop** (Ajustes → Desarrollador → Editar configuración):
+### Paso 7. ¡A dibujar!
 
-```json
-{
-  "mcpServers": {
-    "openpixel": {
-      "command": "node",
-      "args": ["/RUTA/ABSOLUTA/openPixel/packages/server/dist/mcp.js"]
-    }
-  }
-}
-```
+Pídele a Claude, por ejemplo: *"Dibuja un gato pixel art de 32×32 en openPixel"*. Si el editor no está abierto, Claude lo levanta solo y abre tu navegador; si ya lo abriste con `npm start`, se conecta a ese. Verás cada trazo en vivo.
 
-Si el editor no está abierto, el proceso MCP lo levanta solo y abre el navegador la primera vez que Claude dibuja. Si ya está abierto (`npm start`), se conecta a él.
+### Actualizar a una versión nueva
 
-Variables opcionales: `OPENPIXEL_PORT` (puerto, 5577 por defecto), `OPENPIXEL_HOME` (carpeta de autoguardado), `OPENPIXEL_NO_BROWSER=1` (no abrir el navegador).
+- **Con Git:**
 
-### Herramientas MCP
+  ```bash
+  git pull
+  ```
+
+  ```bash
+  npm install
+  ```
+
+  ```bash
+  npm run build
+  ```
+
+- **Con ZIP:** descarga el ZIP otra vez, reemplaza la carpeta (en la misma ruta) y repite el paso 3.
+
+Después reinicia Claude Desktop.
+
+### Solución de problemas
+
+| Problema | Solución |
+|---|---|
+| `node` o `npm` "no se reconoce" | Reinstala Node.js (paso 1) y abre una terminal **nueva**. |
+| No aparecen las herramientas de openpixel en Claude | Revisa que la ruta del JSON exista y use `\\` en Windows; cierra Claude Desktop desde el ícono del reloj (no solo la ventana). En **Ajustes → Desarrollador** verás el estado del servidor y sus errores. |
+| El navegador dice "El editor web no está compilado" | Ejecuta `npm run build` en la carpeta del proyecto. |
+| "El puerto 5577 está ocupado" | Usa otro puerto: en el JSON de Claude agrega `"env": { "OPENPIXEL_PORT": "5600" }` junto a `"args"` y abre `http://localhost:5600`. |
+| "Por seguridad solo se pueden usar archivos dentro de…" | Guarda/abre archivos dentro de tu carpeta de usuario (Escritorio, Documentos, Descargas…), o configura `OPENPIXEL_ALLOWED_DIRS` (ver [SECURITY.md](SECURITY.md)). |
+
+Variables opcionales: `OPENPIXEL_PORT` (puerto, 5577 por defecto), `OPENPIXEL_HOME` (carpeta de autoguardado), `OPENPIXEL_NO_BROWSER=1` (no abrir el navegador), `OPENPIXEL_ALLOWED_DIRS` (carpetas donde se puede guardar y abrir).
+
+## Herramientas MCP
 
 | Herramienta | Para qué sirve |
 |---|---|
@@ -89,7 +199,7 @@ Variables opcionales: `OPENPIXEL_PORT` (puerto, 5577 por defecto), `OPENPIXEL_HO
 
 ```bash
 npm run dev        # servidor + Vite con HMR en http://localhost:5173
-npm test           # pruebas del núcleo
+npm test           # pruebas (núcleo, funciones y seguridad)
 npm run typecheck
 ```
 
@@ -101,4 +211,6 @@ Estructura:
 
 Todos los cambios, vengan del mouse o de Claude, son *operaciones* serializables que el servidor aplica y retransmite a los editores conectados.
 
-El servidor solo escucha en `127.0.0.1`. Rechaza peticiones con un `Host` que no sea localhost y WebSockets de orígenes externos. La API RPC exige un encabezado propio, así que otras páginas web no pueden usarla.
+## Seguridad
+
+openPixel funciona solo en tu computadora: el servidor escucha únicamente en `127.0.0.1`, bloquea a otras páginas web y limita qué archivos puede leer o escribir la IA. Los detalles y cómo reportar un problema están en [SECURITY.md](SECURITY.md).
