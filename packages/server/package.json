@@ -1,0 +1,23 @@
+{
+  "name": "@openpixel/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "openpixel": "dist/main.js",
+    "openpixel-mcp": "dist/mcp.js"
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@openpixel/core": "*",
+    "@types/ws": "^8.18.2",
+    "esbuild": "^0.28.2"
+  }
+}
